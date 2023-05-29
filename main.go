@@ -14,7 +14,8 @@ import (
 )
 
 var (
-	port = flag.Int("port", 8080, "port to run go-balance on")
+	port   = flag.Int("port", 8080, "port to run go-balance on")
+	config Config
 )
 
 // Service is the service to be load balanced
@@ -69,38 +70,46 @@ func (sl *ServerList) Next() uint32 {
 
 // GoBalance is the load balancer
 type GoBalance struct {
-	Config *Config
+	Config     *Config
+	ServerList *ServerList
 }
 
 func (gb GoBalance) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	srv := serverList.Servers[serverList.current]
-	serverList.Next()
+	// TODO: support per service forwarding
+	srv := gb.getNextServer()
 	srv.proxy.ServeHTTP(w, r)
 }
 
-// NewGoBalance returns an instance of GoBalance
-func NewGoBalance(config *Config) GoBalance {
-	return GoBalance{
-		Config: config,
-	}
-}
+func (gb *GoBalance) initServers() {
+	gb.ServerList.Servers = make([]*Server, 0)
 
-var (
-	config     Config
-	serverList ServerList
-)
-
-func InitServers(gb *GoBalance) {
 	for _, s := range gb.Config.Services {
 		for _, r := range s.Replicas {
 			if url, err := url.Parse(r); err != nil {
-				log.Panicf("InitServers err: %s\n", err)
+				log.Panicf("initServers err: %s\n", err)
 			} else {
 				srv := NewServer(url)
-				serverList.Servers = append(serverList.Servers, srv)
+				gb.ServerList.Servers = append(gb.ServerList.Servers, srv)
 			}
 		}
 	}
+}
+
+func (gb *GoBalance) getNextServer() *Server {
+	next := gb.ServerList.Next()
+	srv := gb.ServerList.Servers[next]
+
+	return srv
+}
+
+// NewGoBalance returns an instance of GoBalance
+func NewGoBalance(config *Config) *GoBalance {
+	gb := GoBalance{
+		Config: config,
+	}
+	gb.initServers()
+
+	return &gb
 }
 
 func InitConfig() {
@@ -119,7 +128,6 @@ func main() {
 
 	InitConfig()
 	gb := NewGoBalance(&config)
-	InitServers(&gb)
 
 	strPort := fmt.Sprint(*port)
 	srv := http.Server{
